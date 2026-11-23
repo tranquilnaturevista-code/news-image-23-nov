@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Draw the 23 November 2026 front page and save it as entry.png.
+"""Paint the front page for Monday 23 November 2026 and save entry.png.
 
-A one-day newspaper front page, drawn entirely with Pillow primitives:
-no network, no randomness, no timestamps. Running this script twice
-produces byte-identical output.
+The page is a one-day newspaper front page drawn from scratch with
+Pillow drawing calls: a masthead, a dateline, one lead story, six story
+cards in a two-column grid, a ticker of shorter items and a footer with
+sources. There is no network access, no randomness and no clock in here,
+so running the script twice gives the same bytes twice.
 
-Stories were checked against reports published on Monday 23 November
-2026 (Reuters, BBC, AP, Al Jazeera, The Hindu and the day's news
-digests). Nothing is invented: casualty figures that differed between
-outlets are left out rather than guessed.
+Every story below was reported on Monday 23 November 2026 by the
+outlets named in the footer. Where outlets disagreed about a casualty
+figure, the page prints no figure at all instead of guessing one.
 """
 
 import math
@@ -17,204 +18,214 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-W, H = 1024, 1024
+PAGE_W, PAGE_H = 1024, 1024
 
+# --- palette ------------------------------------------------------------
 PAPER = (251, 246, 236)
 INK = (25, 23, 19)
+BODY = (64, 60, 52)
+MUTED = (92, 86, 76)
 NAVY = (20, 54, 93)
-NAVY_DARK = (13, 38, 66)
-RED = (179, 38, 30)
+NAVY_DEEP = (13, 38, 66)
+SCARLET = (179, 38, 30)
 GOLD = (201, 154, 43)
-GREY = (92, 86, 76)
-CARD_BG = (255, 255, 255)
-LEAD_BG = (232, 240, 247)
-RULE = (25, 23, 19)
+CARD = (255, 255, 255)
+CARD_EDGE = (205, 198, 182)
+LEAD_WASH = (232, 240, 247)
+WHITE = (255, 255, 255)
 
 FONT_DIR = "/usr/share/fonts/truetype/dejavu"
 
 
-def font(name, size):
-    return ImageFont.truetype(os.path.join(FONT_DIR, name), size)
+def _load(filename, size):
+    return ImageFont.truetype(os.path.join(FONT_DIR, filename), size)
 
 
-SERIF_B = lambda s: font("DejaVuSerif-Bold.ttf", s)      # noqa: E731
-SERIF = lambda s: font("DejaVuSerif.ttf", s)             # noqa: E731
-SANS_B = lambda s: font("DejaVuSans-Bold.ttf", s)        # noqa: E731
-SANS = lambda s: font("DejaVuSans.ttf", s)               # noqa: E731
+def serif(size, bold=False):
+    return _load("DejaVuSerif-Bold.ttf" if bold else "DejaVuSerif.ttf", size)
 
 
-def wrap(draw, text, fnt, max_w):
-    """Greedy word wrap returning a list of lines that fit max_w."""
-    words = text.split()
-    lines, cur = [], ""
-    for word in words:
-        trial = (cur + " " + word).strip()
-        if draw.textlength(trial, font=fnt) <= max_w:
-            cur = trial
+def sans(size, bold=False):
+    return _load("DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf", size)
+
+
+# --- text helpers -------------------------------------------------------
+
+def wrap_text(draw, text, fnt, width):
+    """Split text into lines no wider than width, breaking on spaces."""
+    out = []
+    current = ""
+    for word in text.split():
+        candidate = word if not current else current + " " + word
+        if draw.textlength(candidate, font=fnt) <= width:
+            current = candidate
         else:
-            if cur:
-                lines.append(cur)
-            cur = word
-    if cur:
-        lines.append(cur)
-    return lines
+            if current:
+                out.append(current)
+            current = word
+    if current:
+        out.append(current)
+    return out
 
 
-def draw_lines(draw, lines, x, y, fnt, fill, leading):
+def put_lines(draw, lines, x, y, fnt, fill, step):
+    """Draw lines top to bottom, returning the y below the last line."""
     for line in lines:
         draw.text((x, y), line, font=fnt, fill=fill)
-        y += leading
+        y += step
     return y
 
 
-def starburst(draw, cx, cy, r_out, r_in, points, fill):
-    pts = []
-    for i in range(points * 2):
-        r = r_out if i % 2 == 0 else r_in
-        a = math.pi * i / points - math.pi / 2
-        pts.append((cx + r * math.cos(a), cy + r * math.sin(a)))
-    draw.polygon(pts, fill=fill)
+def centred(draw, cx, y, text, fnt, fill):
+    draw.text((cx, y), text, font=fnt, fill=fill, anchor="mm")
 
 
-def icon_globe(draw, cx, cy, r, fill, line):
-    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=fill)
-    draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=line, width=3)
+# --- shapes -------------------------------------------------------------
+
+def star_points(cx, cy, outer, inner, count):
+    """Vertices of a star, alternating outer and inner radius."""
+    verts = []
+    for i in range(count * 2):
+        radius = outer if i % 2 == 0 else inner
+        angle = math.pi * i / count - math.pi / 2
+        verts.append((cx + radius * math.cos(angle),
+                      cy + radius * math.sin(angle)))
+    return verts
+
+
+def paint_globe(draw, cx, cy, r, fg, ring):
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=fg)
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=ring, width=3)
     draw.ellipse([cx - r * 0.45, cy - r, cx + r * 0.45, cy + r],
-                 outline=line, width=3)
-    draw.line([cx - r, cy, cx + r, cy], fill=line, width=3)
+                 outline=ring, width=3)
+    draw.line([cx - r, cy, cx + r, cy], fill=ring, width=3)
     draw.arc([cx - r, cy - r * 0.55, cx + r, cy + r * 0.55],
-             0, 360, fill=line, width=3)
+             0, 360, fill=ring, width=3)
     draw.arc([cx - r, cy - r, cx + r, cy - r * 0.25],
-             180, 360, fill=line, width=3)
+             180, 360, fill=ring, width=3)
 
 
-def icon_burst(draw, cx, cy, r, fill):
-    starburst(draw, cx, cy, r, r * 0.45, 8, fill)
+def paint_burst(draw, cx, cy, r, fg):
+    draw.polygon(star_points(cx, cy, r, r * 0.45, 8), fill=fg)
     draw.ellipse([cx - r * 0.22, cy - r * 0.22, cx + r * 0.22, cy + r * 0.22],
-                 fill=(255, 255, 255))
+                 fill=WHITE)
 
 
-def icon_tanker(draw, cx, cy, r, fill):
-    # hull
+def paint_ship(draw, cx, cy, r, fg):
     draw.polygon([(cx - r, cy - r * 0.1), (cx + r, cy - r * 0.1),
-                  (cx + r * 0.7, cy + r * 0.55), (cx - r * 0.7, cy + r * 0.55)],
-                 fill=fill)
-    # containers
+                  (cx + r * 0.7, cy + r * 0.55),
+                  (cx - r * 0.7, cy + r * 0.55)], fill=fg)
     draw.rectangle([cx - r * 0.7, cy - r * 0.75, cx - r * 0.1, cy - r * 0.15],
-                   fill=fill)
+                   fill=fg)
     draw.rectangle([cx + r * 0.05, cy - r * 0.6, cx + r * 0.65, cy - r * 0.15],
-                   fill=fill)
-    # waves
+                   fill=fg)
     for k, yy in enumerate((cy + r * 0.75, cy + r * 0.9)):
         draw.arc([cx - r - 6 + k * 4, yy - 6, cx - r * 0.2 + k * 4, yy + 6],
-                 180, 360, fill=fill, width=3)
+                 180, 360, fill=fg, width=3)
         draw.arc([cx + r * 0.2 - k * 4, yy - 6, cx + r + 6 - k * 4, yy + 6],
-                 180, 360, fill=fill, width=3)
+                 180, 360, fill=fg, width=3)
 
 
-def icon_drone(draw, cx, cy, r, fill):
+def paint_drone(draw, cx, cy, r, fg):
     draw.ellipse([cx - r * 0.3, cy - r * 0.25, cx + r * 0.3, cy + r * 0.25],
-                 fill=fill)
+                 fill=fg)
     for sx, sy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
         px, py = cx + sx * r * 0.62, cy + sy * r * 0.55
-        draw.line([px - r * 0.3, py, px + r * 0.3, py], fill=fill, width=4)
-        draw.ellipse([px - 4, py - 4, px + 4, py + 4], fill=fill)
-    draw.line([cx - r * 0.3, cy, cx + r * 0.3, cy], fill=fill, width=3)
+        draw.line([px - r * 0.3, py, px + r * 0.3, py], fill=fg, width=4)
+        draw.ellipse([px - 4, py - 4, px + 4, py + 4], fill=fg)
+    draw.line([cx - r * 0.3, cy, cx + r * 0.3, cy], fill=fg, width=3)
 
 
-def icon_star(draw, cx, cy, r, fill):
-    starburst(draw, cx, cy, r, r * 0.42, 5, fill)
+def paint_star(draw, cx, cy, r, fg):
+    draw.polygon(star_points(cx, cy, r, r * 0.42, 5), fill=fg)
     draw.ellipse([cx - r * 0.18, cy - r * 0.18, cx + r * 0.18, cy + r * 0.18],
-                 fill=(255, 255, 255))
+                 fill=WHITE)
 
 
-def icon_chart(draw, cx, cy, r, fill):
+def paint_chart(draw, cx, cy, r, fg):
     draw.line([cx - r * 0.8, cy + r * 0.7, cx + r * 0.8, cy + r * 0.7],
-              fill=fill, width=4)
+              fill=fg, width=4)
     draw.line([cx - r * 0.8, cy + r * 0.7, cx - r * 0.8, cy - r * 0.7],
-              fill=fill, width=4)
-    pts = [(cx - r * 0.65, cy + r * 0.35), (cx - r * 0.2, cy - r * 0.1),
-           (cx + r * 0.15, cy + r * 0.1), (cx + r * 0.7, cy - r * 0.55)]
-    draw.line(pts, fill=fill, width=5, joint="curve")
+              fill=fg, width=4)
+    trace = [(cx - r * 0.65, cy + r * 0.35), (cx - r * 0.2, cy - r * 0.1),
+             (cx + r * 0.15, cy + r * 0.1), (cx + r * 0.7, cy - r * 0.55)]
+    draw.line(trace, fill=fg, width=5, joint="curve")
     draw.polygon([(cx + r * 0.7, cy - r * 0.55), (cx + r * 0.45, cy - r * 0.5),
-                  (cx + r * 0.55, cy - r * 0.28)], fill=fill)
+                  (cx + r * 0.55, cy - r * 0.28)], fill=fg)
 
 
-def icon_ballot(draw, cx, cy, r, fill):
-    # slip of paper above the box, check mark on the box
+def paint_ballot(draw, cx, cy, r, fg):
     draw.rectangle([cx - r * 0.32, cy - r * 0.9, cx + r * 0.32, cy - r * 0.05],
-                   fill=fill)
+                   fill=fg)
     draw.rectangle([cx - r * 0.75, cy - r * 0.05, cx + r * 0.75, cy + r * 0.75],
-                   fill=fill)
+                   fill=fg)
     draw.line([cx - r * 0.45, cy + r * 0.32, cx - r * 0.12, cy + r * 0.58,
-               cx + r * 0.5, cy - r * 0.28 + r * 0.3], fill=(255, 255, 255),
+               cx + r * 0.5, cy + r * 0.02], fill=WHITE,
               width=5, joint="curve")
 
 
-def icon_rocket(draw, cx, cy, r, fill):
-    # body
+def paint_rocket(draw, cx, cy, r, fg):
     draw.polygon([(cx, cy - r), (cx + r * 0.45, cy - r * 0.1),
                   (cx + r * 0.45, cy + r * 0.45),
                   (cx - r * 0.45, cy + r * 0.45),
-                  (cx - r * 0.45, cy - r * 0.1)], fill=fill)
-    # window
+                  (cx - r * 0.45, cy - r * 0.1)], fill=fg)
     draw.ellipse([cx - r * 0.18, cy - r * 0.45, cx + r * 0.18, cy - r * 0.05],
-                 fill=(255, 255, 255))
-    # fins
+                 fill=WHITE)
     draw.polygon([(cx - r * 0.45, cy + r * 0.25), (cx - r * 0.85, cy + r * 0.7),
-                  (cx - r * 0.45, cy + r * 0.55)], fill=fill)
+                  (cx - r * 0.45, cy + r * 0.55)], fill=fg)
     draw.polygon([(cx + r * 0.45, cy + r * 0.25), (cx + r * 0.85, cy + r * 0.7),
-                  (cx + r * 0.45, cy + r * 0.55)], fill=fill)
-    # flame
+                  (cx + r * 0.45, cy + r * 0.55)], fill=fg)
     draw.polygon([(cx - r * 0.25, cy + r * 0.55), (cx + r * 0.25, cy + r * 0.55),
-                  (cx, cy + r)], fill=fill)
+                  (cx, cy + r)], fill=fg)
 
 
-def icon_shield(draw, cx, cy, r, fill):
+def paint_shield(draw, cx, cy, r, fg):
     draw.polygon([(cx - r * 0.8, cy - r * 0.7), (cx + r * 0.8, cy - r * 0.7),
                   (cx + r * 0.8, cy + r * 0.1), (cx, cy + r * 0.9),
-                  (cx - r * 0.8, cy + r * 0.1)], fill=fill)
+                  (cx - r * 0.8, cy + r * 0.1)], fill=fg)
     draw.line([cx - r * 0.4, cy + r * 0.05, cx - r * 0.1, cy + r * 0.35,
-               cx + r * 0.45, cy - r * 0.35], fill=(255, 255, 255),
+               cx + r * 0.45, cy - r * 0.35], fill=WHITE,
               width=5, joint="curve")
 
 
-ICONS = {
-    "globe": icon_globe,
-    "burst": icon_burst,
-    "tanker": icon_tanker,
-    "drone": icon_drone,
-    "star": icon_star,
-    "chart": icon_chart,
-    "ballot": icon_ballot,
-    "rocket": icon_rocket,
-    "shield": icon_shield,
+PAINTERS = {
+    "globe": paint_globe,
+    "burst": paint_burst,
+    "ship": paint_ship,
+    "drone": paint_drone,
+    "star": paint_star,
+    "chart": paint_chart,
+    "ballot": paint_ballot,
+    "rocket": paint_rocket,
+    "shield": paint_shield,
 }
 
 
-def chip(draw, cx, cy, r, color, kind):
+def badge(draw, cx, cy, r, color, kind):
+    """A coloured disc with one of the pictograms inside it."""
     draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=color)
-    fn = ICONS[kind]
+    painter = PAINTERS[kind]
     if kind == "globe":
-        fn(draw, cx, cy, r * 0.72, (255, 255, 255), NAVY)
+        painter(draw, cx, cy, r * 0.72, WHITE, NAVY)
     else:
-        fn(draw, cx, cy, r * 0.62, (255, 255, 255))
+        painter(draw, cx, cy, r * 0.62, WHITE)
 
 
-# ---------------------------------------------------------------- stories
+# --- the day's stories --------------------------------------------------
+
 LEAD = {
     "tag": "CLIMATE  •  ANTALYA, TURKEY",
     "headline": "COP31 talks collapse",
-    "deck": ("The final draft drops any mention of fossil fuels, and the EU "
-             "and others reject a deal without a phase-out. The summit ends "
-             "with no agreement."),
+    "deck": ("The final draft drops any mention of fossil fuels, and the "
+             "EU and others reject a deal without a phase-out. The summit "
+             "ends with no agreement."),
 }
 
-CARDS = [
+ITEMS = [
     {
         "tag": "THE GULF",
         "color": (180, 83, 9),
-        "icon": "tanker",
+        "icon": "ship",
         "headline": "Tankers burn in the Strait of Hormuz",
         "deck": ("Three tankers struck since Friday; Iran says two more "
                  "caught fire on mines."),
@@ -265,86 +276,87 @@ TICKER = ("ALSO TODAY:  Lahore the world's most polluted city (AQI 538)  •  "
           "Shuri Castle restored  •  Nepal PM meets Modi  •  Liverpool beat "
           "Man United  •  India 720/9d")
 
-FOOTER = ("All stories as reported on Monday 23 November 2026  •  "
-          "Sources: Reuters, BBC, AP, Al Jazeera, The Hindu")
+SOURCE_LINE = ("All stories as reported on Monday 23 November 2026  •  "
+               "Sources: Reuters, BBC, AP, Al Jazeera, The Hindu")
 
 
-def build():
-    img = Image.new("RGB", (W, H), PAPER)
+# --- layout -------------------------------------------------------------
+
+def compose():
+    img = Image.new("RGB", (PAGE_W, PAGE_H), PAPER)
     d = ImageDraw.Draw(img)
 
-    # ---- masthead ------------------------------------------------------
-    d.rectangle([0, 0, W, 10], fill=RED)
-    d.rectangle([0, 10, W, 112], fill=NAVY)
-    d.text((W // 2, 58), "THE WORLD IN ONE DAY",
-           font=SERIF_B(62), fill=(255, 255, 255), anchor="mm")
-    d.rectangle([0, 112, W, 116], fill=GOLD)
+    # Masthead: scarlet strip, navy band with the title, gold rule.
+    d.rectangle([0, 0, PAGE_W, 10], fill=SCARLET)
+    d.rectangle([0, 10, PAGE_W, 112], fill=NAVY)
+    centred(d, PAGE_W // 2, 58, "THE WORLD IN ONE DAY", serif(62, bold=True),
+            WHITE)
+    d.rectangle([0, 112, PAGE_W, 116], fill=GOLD)
 
-    # ---- date line ------------------------------------------------------
-    d.text((W // 2, 150), "MONDAY 23 NOVEMBER 2026",
-           font=SERIF_B(48), fill=NAVY_DARK, anchor="mm")
-    d.text((W // 2, 192), "One day's world news — eight stories from every corner of the globe",
-           font=SERIF(21), fill=GREY, anchor="mm")
-    d.line([36, 212, W - 36, 212], fill=RULE, width=3)
-    d.line([36, 218, W - 36, 218], fill=RULE, width=1)
+    # Dateline and standfirst, closed by a double rule.
+    centred(d, PAGE_W // 2, 150, "MONDAY 23 NOVEMBER 2026",
+            serif(48, bold=True), NAVY_DEEP)
+    centred(d, PAGE_W // 2, 192,
+            "One day's world news — eight stories from every corner of the globe",
+            serif(21), MUTED)
+    d.line([36, 212, PAGE_W - 36, 212], fill=INK, width=3)
+    d.line([36, 218, PAGE_W - 36, 218], fill=INK, width=1)
 
-    # ---- lead story ------------------------------------------------------
-    lx, ly, lw, lh = 36, 230, W - 72, 138
-    d.rectangle([lx, ly, lx + lw, ly + lh], fill=LEAD_BG)
+    # Lead story: a wide card with a scarlet spine and a globe badge.
+    lx, ly, lw, lh = 36, 230, PAGE_W - 72, 138
+    d.rectangle([lx, ly, lx + lw, ly + lh], fill=LEAD_WASH)
     d.rectangle([lx, ly, lx + lw, ly + lh], outline=NAVY, width=2)
-    d.rectangle([lx, ly, lx + 10, ly + lh], fill=RED)
+    d.rectangle([lx, ly, lx + 10, ly + lh], fill=SCARLET)
     tx = lx + 28
-    d.text((tx, ly + 14), LEAD["tag"], font=SANS_B(18), fill=RED)
-    head_lines = wrap(d, LEAD["headline"], SANS_B(38), lw - 220)
-    y = draw_lines(d, head_lines, tx, ly + 38, SANS_B(38), NAVY_DARK, 44)
-    deck_lines = wrap(d, LEAD["deck"], SANS(20), lw - 220)
-    draw_lines(d, deck_lines, tx, y + 2, SANS(20), INK, 25)
-    chip(d, lx + lw - 82, ly + lh // 2, 56, NAVY, "globe")
+    d.text((tx, ly + 14), LEAD["tag"], font=sans(18, bold=True), fill=SCARLET)
+    head = wrap_text(d, LEAD["headline"], sans(38, bold=True), lw - 220)
+    y = put_lines(d, head, tx, ly + 38, sans(38, bold=True), NAVY_DEEP, 44)
+    deck = wrap_text(d, LEAD["deck"], sans(20), lw - 220)
+    put_lines(d, deck, tx, y + 2, sans(20), INK, 25)
+    badge(d, lx + lw - 82, ly + lh // 2, 56, NAVY, "globe")
 
-    # ---- story grid ------------------------------------------------------
+    # Story grid: two columns, three rows of cards.
     gx, gy = 36, 382
-    cw, ch, gap = (W - 72 - 12) // 2, 170, 12
-    for i, card in enumerate(CARDS):
+    cw, ch, gap = (PAGE_W - 72 - 12) // 2, 170, 12
+    for i, item in enumerate(ITEMS):
         cx = gx + (i % 2) * (cw + gap)
         cy = gy + (i // 2) * (ch + gap)
-        d.rectangle([cx, cy, cx + cw, cy + ch], fill=CARD_BG)
-        d.rectangle([cx, cy, cx + cw, cy + ch], outline=(205, 198, 182), width=1)
-        d.rectangle([cx, cy, cx + cw, cy + 6], fill=card["color"])
+        d.rectangle([cx, cy, cx + cw, cy + ch], fill=CARD)
+        d.rectangle([cx, cy, cx + cw, cy + ch], outline=CARD_EDGE, width=1)
+        d.rectangle([cx, cy, cx + cw, cy + 6], fill=item["color"])
         pad = 16
-        chip(d, cx + cw - 42, cy + 42, 28, card["color"], card["icon"])
-        d.text((cx + pad, cy + 20), card["tag"], font=SANS_B(17),
-               fill=card["color"])
-        hl = wrap(d, card["headline"], SANS_B(27), cw - pad * 2 - 70)
-        y = draw_lines(d, hl, cx + pad, cy + 48, SANS_B(27), INK, 31)
-        dl = wrap(d, card["deck"], SANS(19), cw - pad * 2)
-        draw_lines(d, dl, cx + pad, y + 4, SANS(19), (64, 60, 52), 23)
+        badge(d, cx + cw - 42, cy + 42, 28, item["color"], item["icon"])
+        d.text((cx + pad, cy + 20), item["tag"],
+               font=sans(17, bold=True), fill=item["color"])
+        hl = wrap_text(d, item["headline"], sans(27, bold=True),
+                       cw - pad * 2 - 70)
+        y = put_lines(d, hl, cx + pad, cy + 48, sans(27, bold=True), INK, 31)
+        dl = wrap_text(d, item["deck"], sans(19), cw - pad * 2)
+        put_lines(d, dl, cx + pad, y + 4, sans(19), BODY, 23)
 
-    # ---- ticker ----------------------------------------------------------
+    # Ticker: a navy band with the shorter items of the day.
     ty = 382 + 3 * ch + 2 * gap + 8
-    d.rectangle([36, ty, W - 36, ty + 56], fill=NAVY)
-    ticker_lines = wrap(d, TICKER, SANS_B(19), W - 72 - 28)
-    yy = ty + 28 - (len(ticker_lines) * 24) // 2
-    for line in ticker_lines:
-        d.text((W // 2, yy + 12), line, font=SANS_B(19),
-               fill=(255, 255, 255), anchor="mm")
+    d.rectangle([36, ty, PAGE_W - 36, ty + 56], fill=NAVY)
+    lines = wrap_text(d, TICKER, sans(19, bold=True), PAGE_W - 72 - 28)
+    yy = ty + 28 - (len(lines) * 24) // 2
+    for line in lines:
+        centred(d, PAGE_W // 2, yy + 12, line, sans(19, bold=True), WHITE)
         yy += 24
 
-    # ---- footer ----------------------------------------------------------
+    # Footer: a hairline and the sources line.
     fy = ty + 56 + 12
-    d.line([36, fy, W - 36, fy], fill=(205, 198, 182), width=1)
-    d.text((W // 2, fy + 6), FOOTER, font=SANS(14), fill=GREY, anchor="ma")
+    d.line([36, fy, PAGE_W - 36, fy], fill=CARD_EDGE, width=1)
+    d.text((PAGE_W // 2, fy + 6), SOURCE_LINE, font=sans(14),
+           fill=MUTED, anchor="ma")
 
     return img
 
 
 def main():
-    # Build tool only: renders the page next to this script so the repo
-    # holds the finished image. The entry program (main.py) is the one
-    # that publishes it to /output/entry.png.
     here = Path(__file__).resolve().parent
     out_dir = Path(os.environ.get("RENDER_OUTPUT_DIR", str(here)))
     out_dir.mkdir(parents=True, exist_ok=True)
-    img = build()
+    img = compose()
     target = out_dir / "entry.png"
     img.save(target, format="PNG")
     print(f"wrote {target} {img.size[0]}x{img.size[1]} "
